@@ -1,0 +1,714 @@
+const API = "https://filipinoxstories.com/wp-json/wp/v2";
+const PAGE_SIZE = 10;
+const AUTHOR_PAGE_SIZE = 24;
+const LIST_EMBED = "author,wp:term,wp:featuredmedia";
+const LIST_FIELDS = "id,date,link,title,excerpt,author,categories,_links,_embedded";
+
+const view = document.querySelector("#view");
+const sidebar = document.querySelector("#sidebar");
+const searchForm = document.querySelector("#search-form");
+const searchInput = document.querySelector("#q");
+const gate = document.querySelector("#gate");
+
+const cache = {
+  categories: null,
+  totals: null,
+};
+
+init();
+
+function init() {
+  const admitted = localStorage.getItem("spayje-adult-ok") === "yes";
+  gate.hidden = admitted;
+
+  document.querySelector("#gate-enter").addEventListener("click", () => {
+    localStorage.setItem("spayje-adult-ok", "yes");
+    gate.hidden = true;
+    render();
+    view.focus();
+  });
+
+  document.querySelector("#gate-leave").addEventListener("click", () => {
+    gate.querySelector("h1").textContent = "You can close this tab.";
+    gate.querySelector(".gate-actions").hidden = true;
+  });
+
+  searchForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const route = parseRoute();
+    const params = new URLSearchParams();
+    const q = searchInput.value.trim();
+    if (q) params.set("q", q);
+    if (route.params.get("cat")) params.set("cat", route.params.get("cat"));
+    go("#/" + (params.toString() ? `?${params}` : ""));
+  });
+
+  window.addEventListener("hashchange", () => {
+    render();
+  });
+
+  if (!location.hash) location.hash = "#/";
+  render();
+}
+
+function parseRoute() {
+  const raw = (location.hash || "#/").slice(1);
+  const [path, query = ""] = raw.split("?");
+  const parts = path.split("/").filter(Boolean);
+  return { parts, params: new URLSearchParams(query) };
+}
+
+function go(hash) {
+  if (location.hash === hash) render();
+  else location.hash = hash;
+}
+
+async function render() {
+  if (localStorage.getItem("spayje-adult-ok") !== "yes") return;
+  const route = parseRoute();
+  const section = route.parts[0] || "stories";
+  highlightNav(section);
+  const onAuthors = section === "authors" || section === "author";
+  searchInput.value = onAuthors ? "" : (route.params.get("q") || "");
+
+  try {
+    await ensureCategories();
+    renderSidebar(route);
+    if (section === "story" && route.parts[1]) return renderStory(route.parts[1]);
+    if (section === "authors") return renderAuthors(route);
+    if (section === "author" && route.parts[1]) return renderAuthor(route);
+    if (section === "categories") return renderCategories();
+    return renderStories(route);
+  } catch (error) {
+    view.innerHTML = "";
+    view.append(messageBlock(
+      "The catalog could not be loaded.",
+      "Open this folder with a local web server, then try again. FilipinoX Stories must be reachable from your browser."
+    ));
+    console.error(error);
+  }
+}
+
+function highlightNav(section) {
+  const name = section === "author" || section === "authors" ? "authors" : section === "categories" ? "categories" : "stories";
+  document.querySelectorAll(".main-nav a").forEach((link) => {
+    if (link.dataset.nav === name) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
+  });
+}
+
+async function ensureCategories() {
+  if (cache.categories) return;
+  const categories = await api("/categories?per_page=100");
+  cache.categories = categories.data
+    .filter((category) => category.count > 0)
+    .sort((a, b) => b.count - a.count);
+}
+
+async function ensureTotals() {
+  if (cache.totals) return cache.totals;
+  const [posts, authors] = await Promise.all([
+    api("/posts?per_page=1&_fields=id"),
+    api("/users?per_page=1&_fields=id"),
+  ]);
+  cache.totals = {
+    posts: posts.total,
+    authors: authors.total,
+    categories: cache.categories.length,
+  };
+  return cache.totals;
+}
+
+function renderSidebar(route) {
+  const active = route.parts[0] ? "" : route.params.get("cat") || "";
+  sidebar.innerHTML = "";
+  const title = document.createElement("h2");
+  title.textContent = "Categories";
+  const list = document.createElement("div");
+  list.className = "cat-list";
+
+  const all = document.createElement("a");
+  all.className = "cat-link";
+  all.href = keepSearch("#/");
+  if (!active && !route.parts[0]) all.setAttribute("aria-current", "true");
+  all.append(labelSpan("All stories"), labelSpan(""));
+  list.append(all);
+
+  cache.categories.forEach((category) => {
+    const link = document.createElement("a");
+    link.className = "cat-link";
+    const params = new URLSearchParams();
+    const q = searchInput.value.trim();
+    if (q) params.set("q", q);
+    params.set("cat", String(category.id));
+    link.href = `#/?${params}`;
+    if (String(category.id) === active) link.setAttribute("aria-current", "true");
+    const name = document.createElement("span");
+    name.textContent = category.name;
+    const count = document.createElement("span");
+    count.textContent = formatNumber(category.count);
+    link.append(name, count);
+    list.append(link);
+  });
+
+  sidebar.append(title, list);
+}
+
+function keepSearch(hash) {
+  const q = searchInput.value.trim();
+  if (!q) return hash;
+  return `${hash}?q=${encodeURIComponent(q)}`;
+}
+
+async function renderStories(route) {
+  const page = clampPage(route.params.get("page"));
+  const q = route.params.get("q") || "";
+  const cat = route.params.get("cat") || "";
+  setStatus("Loading stories…");
+
+  const params = new URLSearchParams({
+    per_page: String(PAGE_SIZE),
+    page: String(page),
+    _embed: LIST_EMBED,
+    _fields: LIST_FIELDS,
+  });
+  if (q) params.set("search", q);
+  if (cat) params.set("categories", cat);
+
+  const [result, totals] = await Promise.all([
+    api(`/posts?${params}`),
+    ensureTotals(),
+  ]);
+
+  const category = cache.categories.find((item) => String(item.id) === cat);
+  view.innerHTML = "";
+
+  const hero = document.createElement("section");
+  hero.className = "hero";
+  const eyebrow = document.createElement("p");
+  eyebrow.className = "eyebrow";
+  eyebrow.textContent = q ? "Search" : category ? category.name : "Latest stories";
+  const heading = document.createElement("h1");
+  heading.textContent = q ? `Results for “${q}”` : category ? category.name : "Read the catalog";
+  const lede = document.createElement("p");
+  lede.className = "lede";
+  lede.textContent = "Titles, authors, and full stories come from FilipinoX Stories. Open any title to read it here.";
+  hero.append(eyebrow, heading, lede);
+
+  if (!q && !category) {
+    const stats = document.createElement("div");
+    stats.className = "stats";
+    stats.append(
+      stat(totals.posts, "Stories"),
+      stat(totals.authors, "Authors"),
+      stat(totals.categories, "Categories")
+    );
+    hero.append(stats);
+  }
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "toolbar";
+  const summary = document.createElement("p");
+  summary.textContent = result.total
+    ? `${formatNumber(result.total)} ${result.total === 1 ? "story" : "stories"}`
+    : "No stories matched.";
+  toolbar.append(summary);
+
+  const list = document.createElement("div");
+  list.className = "story-list";
+  if (!Array.isArray(result.data) || !result.data.length) {
+    list.append(messageBlock("Nothing matched.", "Try another title, author name, or category."));
+  } else {
+    result.data.forEach((post) => list.append(storyRow(post)));
+  }
+
+  view.append(hero, toolbar, list, pager(page, result.pages, (next) => storiesHash(q, cat, next)));
+}
+
+function storiesHash(q, cat, page) {
+  const params = new URLSearchParams();
+  if (q) params.set("q", q);
+  if (cat) params.set("cat", cat);
+  if (page > 1) params.set("page", String(page));
+  const query = params.toString();
+  return query ? `#/?${query}` : "#/";
+}
+
+function storyRow(post) {
+  const link = document.createElement("article");
+  link.className = "story-row";
+  const cover = coverImage(post, ["inkbound-thumb", "post-thumbnail", "medium"], "cover");
+  if (!cover) link.classList.add("no-cover");
+  const copy = document.createElement("div");
+  copy.className = "story-copy";
+  const title = document.createElement("h2");
+  const titleLink = document.createElement("a");
+  titleLink.href = `#/story/${post.id}`;
+  titleLink.textContent = plain(post.title.rendered);
+  title.append(titleLink);
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  const author = authorFrom(post);
+  if (author) {
+    const authorLink = document.createElement("a");
+    authorLink.href = `#/author/${author.id}`;
+    authorLink.textContent = author.name;
+    meta.append(authorLink);
+  }
+  const date = document.createElement("span");
+  date.textContent = formatDate(post.date);
+  meta.append(date);
+  const excerpt = document.createElement("p");
+  excerpt.className = "excerpt";
+  excerpt.textContent = plain(post.excerpt.rendered);
+  const tags = document.createElement("div");
+  tags.className = "tags";
+  categoriesFrom(post).slice(0, 4).forEach((category) => {
+    const tag = document.createElement("span");
+    tag.className = "tag";
+    tag.textContent = category.name;
+    tags.append(tag);
+  });
+  copy.append(title, meta, excerpt, tags);
+  if (cover) link.append(cover);
+  link.append(copy);
+  return link;
+}
+
+async function renderStory(id) {
+  setStatus("Opening story…");
+  const post = await api(
+    `/posts/${encodeURIComponent(id)}?_embed=${LIST_EMBED}&_fields=id,date,modified,link,title,content,excerpt,author,_links,_embedded`
+  );
+  const story = post.data;
+  if (!story || story.code) {
+    view.innerHTML = "";
+    view.append(messageBlock("That story is not available.", "It may have been removed from FilipinoX Stories."));
+    return;
+  }
+
+  view.innerHTML = "";
+  const sheet = document.createElement("article");
+  sheet.className = "story-sheet";
+  const head = document.createElement("div");
+  head.className = "story-head";
+  const cover = coverImage(story, ["inkbound-cover", "inkbound-hero", "medium_large"], "story-cover");
+  if (!cover) head.classList.add("no-cover");
+  const intro = document.createElement("div");
+  const eyebrow = document.createElement("p");
+  eyebrow.className = "eyebrow";
+  eyebrow.textContent = "Story";
+  const title = document.createElement("h1");
+  title.textContent = plain(story.title.rendered);
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  const author = authorFrom(story);
+  if (author) {
+    const authorLink = document.createElement("a");
+    authorLink.href = `#/author/${author.id}`;
+    authorLink.textContent = author.name;
+    meta.append(authorLink);
+  }
+  const published = document.createElement("span");
+  published.textContent = formatDate(story.date);
+  meta.append(published);
+  categoriesFrom(story).forEach((category) => {
+    const categoryLink = document.createElement("a");
+    categoryLink.href = `#/?cat=${category.id}`;
+    categoryLink.textContent = category.name;
+    meta.append(categoryLink);
+  });
+
+  intro.append(eyebrow, title, meta);
+  if (cover) head.append(cover);
+  head.append(intro);
+
+  const body = document.createElement("div");
+  body.className = "story-body";
+  body.innerHTML = sanitizeStoryHtml(story.content.rendered || "");
+
+  const actions = document.createElement("div");
+  actions.className = "story-actions";
+  const back = document.createElement("a");
+  back.className = "btn";
+  back.href = "#/";
+  back.textContent = "Back to stories";
+  const original = document.createElement("a");
+  original.className = "btn btn-primary";
+  original.href = story.link;
+  original.target = "_blank";
+  original.rel = "noopener noreferrer";
+  original.textContent = "Open on FilipinoX Stories";
+  actions.append(back, original);
+  sheet.append(head, body, actions);
+  view.append(sheet);
+  view.focus();
+}
+
+async function renderAuthors(route) {
+  const page = clampPage(route.params.get("page"));
+  const q = route.params.get("q") || "";
+  setStatus("Loading authors…");
+  const params = new URLSearchParams({
+    per_page: String(AUTHOR_PAGE_SIZE),
+    page: String(page),
+    _fields: "id,name,slug,description,avatar_urls",
+  });
+  if (q) params.set("search", q);
+  const result = await api(`/users?${params}`);
+  view.innerHTML = "";
+
+  const hero = document.createElement("section");
+  hero.className = "hero";
+  const eyebrow = document.createElement("p");
+  eyebrow.className = "eyebrow";
+  eyebrow.textContent = "Authors";
+  const heading = document.createElement("h1");
+  heading.textContent = q ? `Authors matching “${q}”` : "Authors";
+  const lede = document.createElement("p");
+  lede.className = "lede";
+  lede.textContent = "Every public author on FilipinoX Stories. Open a name to see their stories.";
+  const form = document.createElement("form");
+  form.className = "search";
+  form.style.marginTop = "16px";
+  const input = document.createElement("input");
+  input.type = "search";
+  input.name = "author-q";
+  input.value = q;
+  input.placeholder = "Search authors";
+  input.setAttribute("aria-label", "Search authors");
+  const button = document.createElement("button");
+  button.className = "btn btn-primary";
+  button.type = "submit";
+  button.textContent = "Search";
+  form.append(input, button);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const next = new URLSearchParams();
+    const term = input.value.trim();
+    if (term) next.set("q", term);
+    go(`#/authors${next.toString() ? `?${next}` : ""}`);
+  });
+  hero.append(eyebrow, heading, lede, form);
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "toolbar";
+  const summary = document.createElement("p");
+  summary.textContent = `${formatNumber(result.total)} ${result.total === 1 ? "author" : "authors"}`;
+  toolbar.append(summary);
+
+  const grid = document.createElement("div");
+  grid.className = "people";
+  if (!Array.isArray(result.data) || !result.data.length) {
+    grid.append(messageBlock("No authors matched.", "Try a different name."));
+  } else {
+    result.data.forEach((author) => {
+      const card = document.createElement("a");
+      card.className = "person";
+      card.href = `#/author/${author.id}`;
+      card.append(avatar(author), personText(author.name, author.description));
+      grid.append(card);
+    });
+  }
+
+  view.append(
+    hero,
+    toolbar,
+    grid,
+    pager(page, result.pages, (next) => {
+      const params = new URLSearchParams();
+      if (q) params.set("q", q);
+      if (next > 1) params.set("page", String(next));
+      const query = params.toString();
+      return query ? `#/authors?${query}` : "#/authors";
+    })
+  );
+}
+
+async function renderAuthor(route) {
+  const id = route.parts[1];
+  const page = clampPage(route.params.get("page"));
+  setStatus("Loading author…");
+  const [userResult, posts] = await Promise.all([
+    api(`/users/${encodeURIComponent(id)}?_fields=id,name,description,avatar_urls,link`),
+    api(`/posts?author=${encodeURIComponent(id)}&per_page=${PAGE_SIZE}&page=${page}&_embed=${LIST_EMBED}&_fields=${LIST_FIELDS}`),
+  ]);
+  const author = userResult.data;
+  view.innerHTML = "";
+  if (!author || author.code) {
+    view.append(messageBlock("Author not found.", "This profile is not public on FilipinoX Stories."));
+    return;
+  }
+
+  const hero = document.createElement("section");
+  hero.className = "hero";
+  const eyebrow = document.createElement("p");
+  eyebrow.className = "eyebrow";
+  eyebrow.textContent = "Author";
+  const heading = document.createElement("h1");
+  heading.textContent = author.name;
+  const lede = document.createElement("p");
+  lede.className = "lede";
+  lede.textContent = plain(author.description) || "No biography is published for this author.";
+  const profile = document.createElement("div");
+  profile.className = "person";
+  profile.style.marginTop = "16px";
+  profile.append(avatar(author));
+  const original = document.createElement("a");
+  original.href = author.link;
+  original.target = "_blank";
+  original.rel = "noopener noreferrer";
+  original.textContent = "Profile on FilipinoX Stories";
+  original.style.color = "var(--gold)";
+  profile.append(original);
+  hero.append(eyebrow, heading, lede, profile);
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "toolbar";
+  const summary = document.createElement("p");
+  summary.textContent = `${formatNumber(posts.total)} ${posts.total === 1 ? "story" : "stories"}`;
+  toolbar.append(summary);
+
+  const list = document.createElement("div");
+  list.className = "story-list";
+  if (!posts.data.length) {
+    list.append(messageBlock("No stories yet.", "This author has no public stories in the catalog."));
+  } else {
+    posts.data.forEach((post) => list.append(storyRow(post)));
+  }
+
+  view.append(
+    hero,
+    toolbar,
+    list,
+    pager(page, posts.pages, (next) => (next > 1 ? `#/author/${id}?page=${next}` : `#/author/${id}`))
+  );
+}
+
+function renderCategories() {
+  view.innerHTML = "";
+  const hero = document.createElement("section");
+  hero.className = "hero";
+  const eyebrow = document.createElement("p");
+  eyebrow.className = "eyebrow";
+  eyebrow.textContent = "Browse";
+  const heading = document.createElement("h1");
+  heading.textContent = "Categories";
+  const lede = document.createElement("p");
+  lede.className = "lede";
+  lede.textContent = "The same categories used on FilipinoX Stories. Counts update from the live catalog.";
+  hero.append(eyebrow, heading, lede);
+
+  const grid = document.createElement("div");
+  grid.className = "category-grid";
+  cache.categories.forEach((category) => {
+    const card = document.createElement("a");
+    card.className = "category-card";
+    card.href = `#/?cat=${category.id}`;
+    const title = document.createElement("h2");
+    title.textContent = category.name;
+    const meta = document.createElement("p");
+    meta.className = "meta";
+    meta.textContent = `${formatNumber(category.count)} stories`;
+    card.append(title, meta);
+    grid.append(card);
+  });
+  view.append(hero, grid);
+}
+
+function pager(page, pages, hrefFor) {
+  const nav = document.createElement("nav");
+  nav.className = "pager";
+  nav.setAttribute("aria-label", "Pagination");
+  if (pages <= 1) return nav;
+
+  const addLink = (label, target, current = false) => {
+    if (current) {
+      const span = document.createElement("span");
+      span.className = "current";
+      span.textContent = label;
+      span.setAttribute("aria-current", "page");
+      nav.append(span);
+      return;
+    }
+    const link = document.createElement("a");
+    link.href = hrefFor(target);
+    link.textContent = label;
+    nav.append(link);
+  };
+
+  if (page > 1) addLink("Previous", page - 1);
+  const start = Math.max(1, page - 2);
+  const end = Math.min(pages, page + 2);
+  if (start > 1) addLink("1", 1);
+  for (let number = start; number <= end; number += 1) addLink(String(number), number, number === page);
+  if (end < pages) addLink(String(pages), pages);
+  if (page < pages) addLink("Next", page + 1);
+  return nav;
+}
+
+function stat(value, label) {
+  const box = document.createElement("div");
+  box.className = "stat";
+  const strong = document.createElement("b");
+  strong.textContent = formatNumber(value);
+  const span = document.createElement("span");
+  span.textContent = label;
+  box.append(strong, span);
+  return box;
+}
+
+function avatar(author) {
+  const url = author.avatar_urls && (author.avatar_urls["96"] || author.avatar_urls["48"]);
+  if (url) {
+    const image = document.createElement("img");
+    image.className = "avatar";
+    image.alt = "";
+    image.src = url;
+    image.addEventListener("error", () => {
+      image.replaceWith(fallbackAvatar(author.name));
+    });
+    return image;
+  }
+  return fallbackAvatar(author.name);
+}
+
+function fallbackAvatar(name) {
+  const span = document.createElement("span");
+  span.className = "avatar avatar-fallback";
+  span.textContent = (name || "?").slice(0, 1).toUpperCase();
+  return span;
+}
+
+function personText(name, description) {
+  const wrap = document.createElement("div");
+  const title = document.createElement("h2");
+  title.textContent = name;
+  wrap.append(title);
+  const bio = plain(description);
+  if (bio) {
+    const text = document.createElement("p");
+    text.className = "excerpt";
+    text.textContent = bio.length > 110 ? `${bio.slice(0, 107)}…` : bio;
+    wrap.append(text);
+  }
+  return wrap;
+}
+
+function coverImage(post, sizeNames, className) {
+  const image = featuredImage(post, sizeNames);
+  if (!image) return null;
+  const element = document.createElement("img");
+  element.className = className;
+  element.src = image.src;
+  element.alt = image.alt;
+  element.loading = "lazy";
+  element.decoding = "async";
+  return element;
+}
+
+function featuredImage(post, sizeNames) {
+  const media = post._embedded && post._embedded["wp:featuredmedia"] && post._embedded["wp:featuredmedia"][0];
+  if (!media || media.code || !media.source_url) return null;
+  const sizes = (media.media_details && media.media_details.sizes) || {};
+  const size = sizeNames.map((name) => sizes[name]).find(Boolean);
+  return {
+    src: (size && size.source_url) || media.source_url,
+    alt: media.alt_text || plain(post.title && post.title.rendered),
+  };
+}
+
+function authorFrom(post) {
+  const embedded = post._embedded && post._embedded.author && post._embedded.author[0];
+  if (!embedded || embedded.code) return null;
+  return embedded;
+}
+
+function categoriesFrom(post) {
+  const groups = (post._embedded && post._embedded["wp:term"]) || [];
+  return groups.flat().filter((term) => term.taxonomy === "category");
+}
+
+function setStatus(text) {
+  view.innerHTML = "";
+  const status = document.createElement("p");
+  status.className = "status";
+  status.textContent = text;
+  view.append(status);
+}
+
+function messageBlock(title, detail) {
+  const wrap = document.createElement("div");
+  wrap.className = "empty";
+  const heading = document.createElement("h2");
+  heading.textContent = title;
+  const text = document.createElement("p");
+  text.className = "muted";
+  text.textContent = detail;
+  wrap.append(heading, text);
+  return wrap;
+}
+
+function labelSpan(text) {
+  const span = document.createElement("span");
+  span.textContent = text;
+  return span;
+}
+
+async function api(path) {
+  const response = await fetch(`${API}${path}`);
+  const total = Number(response.headers.get("X-WP-Total") || 0);
+  const pages = Number(response.headers.get("X-WP-TotalPages") || 0);
+  const data = await response.json();
+  if (!response.ok && !data.code) {
+    throw new Error(`Request failed (${response.status})`);
+  }
+  return { data, total, pages };
+}
+
+function plain(html) {
+  const holder = document.createElement("div");
+  holder.innerHTML = html || "";
+  return (holder.textContent || "").replace(/\s+/g, " ").trim();
+}
+
+function sanitizeStoryHtml(html) {
+  const doc = new DOMParser().parseFromString(html || "", "text/html");
+  const blocked = new Set(["script", "style", "iframe", "object", "embed", "link", "meta", "form", "svg"]);
+  doc.body.querySelectorAll("*").forEach((element) => {
+    if (blocked.has(element.tagName.toLowerCase())) {
+      element.remove();
+      return;
+    }
+    [...element.attributes].forEach((attribute) => {
+      const name = attribute.name.toLowerCase();
+      const value = attribute.value || "";
+      if (name.startsWith("on") || name === "style" || name === "srcdoc") {
+        element.removeAttribute(attribute.name);
+      }
+      if ((name === "href" || name === "src") && /^\s*javascript:/i.test(value)) {
+        element.removeAttribute(attribute.name);
+      }
+    });
+    if (element.tagName === "A") {
+      element.target = "_blank";
+      element.rel = "noopener noreferrer";
+    }
+  });
+  return doc.body.innerHTML;
+}
+
+function formatDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric" });
+}
+
+function formatNumber(value) {
+  return new Intl.NumberFormat("en-US").format(value || 0);
+}
+
+function clampPage(value) {
+  const page = Number(value || 1);
+  return Number.isFinite(page) && page > 0 ? Math.floor(page) : 1;
+}

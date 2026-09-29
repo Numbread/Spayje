@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spayje — FilipinoX Stories reader</title>
+  <meta name="description" content="Read stories, authors, and categories from FilipinoX Stories.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2314110f'/%3E%3Cpath d='M8 22V10h3.2l4.8 7.2L20.8 10H24v12h-2.6v-7.1L17.4 22h-2.8l-3.9-7.1V22H8z' fill='%23f0c27a'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Literata:opsz,wght@7..72,460;7..72,650;7..72,720&family=Manrope:wght@420;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <div id="gate" class="gate" hidden>
+    <div class="gate-card">
+      <p class="eyebrow">Adult fiction</p>
+      <h1>This reader is for adults.</h1>
+      <p>Spayje shows erotic stories published on FilipinoX Stories. Continue only if you are 18 or older.</p>
+      <div class="gate-actions">
+        <button type="button" class="btn btn-primary" id="gate-enter">I am 18 or older</button>
+        <button type="button" class="btn btn-ghost" id="gate-leave">Leave</button>
+      </div>
+    </div>
+  </div>
+
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="#/">
+        <span class="brand-mark" aria-hidden="true">S</span>
+        <span>
+          <span class="brand-name">Spayje</span>
+          <span class="brand-sub">FilipinoX Stories</span>
+        </span>
+      </a>
+      <form id="search-form" class="search" role="search">
+        <label class="sr-only" for="q">Search stories</label>
+        <input id="q" name="q" type="search" placeholder="Search titles and stories" autocomplete="off">
+        <button type="submit" class="btn btn-primary">Search</button>
+      </form>
+      <nav class="main-nav" aria-label="Primary">
+        <a href="#/" data-nav="stories">Stories</a>
+        <a href="#/authors" data-nav="authors">Authors</a>
+        <a href="#/categories" data-nav="categories">Categories</a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside id="sidebar" class="sidebar" aria-label="Categories"></aside>
+    <main id="view" class="view" tabindex="-1"></main>
+  </div>
+
+  <footer class="site-footer">
+    <p>Stories, authors, and categories are loaded live from <a href="https://filipinoxstories.com/" target="_blank" rel="noopener noreferrer">filipinoxstories.com</a>. The writing stays theirs.</p>
+  </footer>
+
+  <noscript>
+    <p class="noscript">Turn on JavaScript to load the catalog.</p>
+  </noscript>
+  <script src="js/app.js?v=4"></script>
+</body>
+</html>
