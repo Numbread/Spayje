@@ -278,7 +278,7 @@ function storyRow(post) {
 async function renderStory(id) {
   setStatus("Opening story…");
   const post = await api(
-    `/posts/${encodeURIComponent(id)}?_embed=${LIST_EMBED}&_fields=id,date,modified,link,title,content,excerpt,author,_links,_embedded`
+    `/posts/${encodeURIComponent(id)}?_embed=${LIST_EMBED}&_fields=id,date,modified,link,title,content,excerpt,author,meta,_links,_embedded`
   );
   const story = post.data;
   if (!story || story.code) {
@@ -323,9 +323,16 @@ async function renderStory(id) {
   if (cover) head.append(cover);
   head.append(intro);
 
+  const fullStory = await loadFullStory(story);
   const body = document.createElement("div");
   body.className = "story-body";
-  body.innerHTML = sanitizeStoryHtml(story.content.rendered || "");
+  if (plain(fullStory.html)) {
+    body.innerHTML = sanitizeStoryHtml(fullStory.html);
+  } else {
+    const note = document.createElement("p");
+    note.textContent = "The full story is not included in this catalog entry.";
+    body.append(note);
+  }
 
   const actions = document.createElement("div");
   actions.className = "story-actions";
@@ -335,7 +342,7 @@ async function renderStory(id) {
   back.textContent = "Back to stories";
   const original = document.createElement("a");
   original.className = "btn btn-primary";
-  original.href = story.link;
+  original.href = fullStory.source || story.link;
   original.target = "_blank";
   original.rel = "noopener noreferrer";
   original.textContent = "Open on FilipinoX Stories";
@@ -653,6 +660,25 @@ function labelSpan(text) {
   const span = document.createElement("span");
   span.textContent = text;
   return span;
+}
+
+async function loadFullStory(story) {
+  const html = (story.content && story.content.rendered) || "";
+  const linked = story.meta && story.meta._links_to;
+  if (plain(html) || !linked) return { html, source: story.link };
+  try {
+    const url = new URL(linked);
+    const slug = url.pathname.split("/").filter(Boolean).pop();
+    if (!slug) return { html: "", source: linked };
+    const response = await fetch(`${url.origin}/wp-json/wp/v2/posts?slug=${encodeURIComponent(slug)}&_fields=link,content`);
+    if (!response.ok) return { html: "", source: linked };
+    const posts = await response.json();
+    const post = Array.isArray(posts) ? posts[0] : null;
+    if (!post || !post.content) return { html: "", source: linked };
+    return { html: post.content.rendered || "", source: post.link || linked };
+  } catch {
+    return { html: "", source: linked };
+  }
 }
 
 async function api(path) {
