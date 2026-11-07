@@ -13,6 +13,7 @@ const gate = document.querySelector("#gate");
 const cache = {
   categories: null,
   totals: null,
+  chapters: new Map(),
 };
 
 init();
@@ -334,6 +335,9 @@ async function renderStory(id) {
     body.append(note);
   }
 
+  const navSection = document.createElement("div");
+  navSection.className = "story-nav-section";
+
   const actions = document.createElement("div");
   actions.className = "story-actions";
   const back = document.createElement("a");
@@ -347,9 +351,64 @@ async function renderStory(id) {
   original.rel = "noopener noreferrer";
   original.textContent = "Open on FilipinoX Stories";
   actions.append(back, original);
-  sheet.append(head, body, actions);
+
+  sheet.append(head, body, navSection, actions);
   view.append(sheet);
   view.focus();
+  window.scrollTo(0, 0);
+
+  findAdjacentChapters(story).then((adj) => {
+    const currentRoute = parseRoute();
+    if (currentRoute.parts[0] !== "story" || String(currentRoute.parts[1]) !== String(story.id)) {
+      return;
+    }
+
+    if (adj.next) {
+      original.className = "btn";
+
+      const card = document.createElement("div");
+      card.className = "next-chapter-card";
+
+      const info = document.createElement("div");
+      info.className = "next-chapter-text";
+      const cardEyebrow = document.createElement("p");
+      cardEyebrow.className = "eyebrow";
+      cardEyebrow.textContent = "Next chapter";
+      const nextTitle = document.createElement("h2");
+      nextTitle.className = "next-chapter-title";
+      nextTitle.textContent = plain((adj.next.title && adj.next.title.rendered) || adj.next.title);
+      info.append(cardEyebrow, nextTitle);
+
+      const nextBtn = document.createElement("a");
+      nextBtn.className = "btn btn-primary next-chapter-btn";
+      nextBtn.href = `#/story/${adj.next.id}`;
+      nextBtn.innerHTML = `<span>Read next chapter</span> <span aria-hidden="true">&rarr;</span>`;
+
+      card.append(info, nextBtn);
+      navSection.append(card);
+
+      const nextAction = document.createElement("a");
+      nextAction.className = "btn btn-primary";
+      nextAction.href = `#/story/${adj.next.id}`;
+      nextAction.textContent = "Next chapter \u2192";
+      actions.prepend(nextAction);
+    } else if (adj.prev) {
+      const note = document.createElement("p");
+      note.className = "series-end-note";
+      note.textContent = "You're caught up! This is the latest chapter available for this story.";
+      navSection.append(note);
+    }
+
+    if (adj.prev) {
+      const prevAction = document.createElement("a");
+      prevAction.className = "btn";
+      prevAction.href = `#/story/${adj.prev.id}`;
+      prevAction.textContent = "\u2190 Previous chapter";
+      actions.insertBefore(prevAction, back);
+    }
+  }).catch((err) => {
+    console.warn("Could not check for adjacent chapters:", err);
+  });
 }
 
 async function renderAuthors(route) {
@@ -737,4 +796,193 @@ function formatNumber(value) {
 function clampPage(value) {
   const page = Number(value || 1);
   return Number.isFinite(page) && page > 0 ? Math.floor(page) : 1;
+}
+
+async function findAdjacentChapters(currentStory) {
+  if (!currentStory || !currentStory.id) return { next: null, prev: null };
+  if (cache.chapters.has(currentStory.id)) {
+    return cache.chapters.get(currentStory.id);
+  }
+
+  const currentTitle = cleanTitleString((currentStory.title && currentStory.title.rendered) || currentStory.title);
+  const currentSlug = currentStory.slug || "";
+  const seriesInfo = parseStorySeries(currentTitle, currentSlug);
+  const currentNum = seriesInfo.number;
+  const baseKey = normalizeSeriesKey(seriesInfo.base);
+
+  const candidateMap = new Map();
+  const addCandidates = (result) => {
+    const posts = Array.isArray(result) ? result : (result && result.data);
+    if (!Array.isArray(posts)) return;
+    for (const p of posts) {
+      if (p.id !== currentStory.id && !candidateMap.has(p.id)) {
+        candidateMap.set(p.id, p);
+      }
+    }
+  };
+
+  const author = authorFrom(currentStory);
+  const authorId = author ? author.id : (typeof currentStory.author === "number" ? currentStory.author : null);
+  const cleanSearch = seriesInfo.base
+    .replace(/&#[0-9]+;/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const authorPromises = [];
+  if (authorId) {
+    if (cleanSearch) {
+      authorPromises.push(
+        api(`/posts?author=${authorId}&search=${encodeURIComponent(cleanSearch)}&per_page=50&_fields=id,title,slug,date,author`)
+          .then(addCandidates)
+          .catch(() => {})
+      );
+    }
+    if (currentStory.date) {
+      authorPromises.push(
+        api(`/posts?author=${authorId}&after=${encodeURIComponent(currentStory.date)}&order=asc&orderby=date&per_page=15&_fields=id,title,slug,date,author`)
+          .then(addCandidates)
+          .catch(() => {})
+      );
+    }
+  }
+
+  await Promise.all(authorPromises);
+
+  const filterMatches = () => {
+    const matches = [];
+    for (const post of candidateMap.values()) {
+      const postTitle = cleanTitleString((post.title && post.title.rendered) || post.title);
+      const postSeries = parseStorySeries(postTitle, post.slug);
+      const postBaseKey = normalizeSeriesKey(postSeries.base);
+
+      const isBaseMatch = postBaseKey === baseKey ||
+        postBaseKey.startsWith(baseKey) ||
+        baseKey.startsWith(postBaseKey) ||
+        (currentSlug && post.slug && post.slug.startsWith(currentSlug.replace(/-\d+$/, "")));
+
+      if (!isBaseMatch) continue;
+
+      matches.push({
+        post,
+        number: postSeries.number,
+        title: postTitle,
+        date: new Date(post.date).getTime() || 0,
+      });
+    }
+    return matches;
+  };
+
+  let matches = filterMatches();
+
+  const hasNextInMatches = currentNum !== null
+    ? matches.some((m) => m.number !== null && m.number > currentNum)
+    : matches.some((m) => m.number === 2 || m.date >= new Date(currentStory.date).getTime());
+
+  if (!hasNextInMatches && cleanSearch.length >= 3) {
+    try {
+      const res = await api(`/posts?search=${encodeURIComponent(cleanSearch)}&per_page=30&_fields=id,title,slug,date,author`);
+      addCandidates(res);
+      matches = filterMatches();
+    } catch {}
+  }
+
+  let next = null;
+  let prev = null;
+
+  if (currentNum !== null) {
+    const nextExact = matches.find((m) => m.number === currentNum + 1);
+    if (nextExact) {
+      next = nextExact.post;
+    } else {
+      const greater = matches.filter((m) => m.number !== null && m.number > currentNum).sort((a, b) => a.number - b.number);
+      if (greater.length > 0) next = greater[0].post;
+    }
+
+    const prevExact = matches.find((m) => m.number === currentNum - 1);
+    if (prevExact) {
+      prev = prevExact.post;
+    } else {
+      const lesser = matches.filter((m) => m.number !== null && m.number < currentNum).sort((a, b) => b.number - a.number);
+      if (lesser.length > 0) prev = lesser[0].post;
+    }
+  } else {
+    const ch2 = matches.find((m) => m.number === 2);
+    if (ch2) {
+      next = ch2.post;
+    } else {
+      const after = matches.filter((m) => m.date >= new Date(currentStory.date).getTime()).sort((a, b) => a.date - b.date);
+      if (after.length > 0) next = after[0].post;
+    }
+  }
+
+  const result = { next, prev, series: seriesInfo };
+  cache.chapters.set(currentStory.id, result);
+  return result;
+}
+
+function parseStorySeries(title, slug = "") {
+  const clean = cleanTitleString(title);
+
+  const patterns = [
+    /^(.*?)\s*[-:]?\s*(?:chapter|part|ch|act)\s*([0-9]+|[ivxlcdm]+)\s*[-:–—(]\s*(.*)$/i,
+    /^(.*?)\s+([0-9]+)\s*[-:–—]\s*(.*)$/i,
+    /^(.*?)\s*[-:]?\s*\(?\s*(?:chapter|part|ch|act)\s*([0-9]+|[ivxlcdm]+)\s*\)?$/i,
+    /^(.*?)\s*\(([0-9]+|[ivxlcdm]+)\)$/i,
+    /^(.*?)\s+([0-9]+)$/i,
+    /^(.*?)\s+([ivxlcdm]{2,})$/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = clean.match(pattern);
+    if (match) {
+      const base = match[1].trim().replace(/[-–—:]$/, "").trim();
+      const rawNum = match[2];
+      const num = /^[0-9]+$/.test(rawNum) ? parseInt(rawNum, 10) : romanToNumber(rawNum);
+      if (num !== null && base.length >= 2) {
+        return { base, number: num, cleanTitle: clean };
+      }
+    }
+  }
+
+  if (slug) {
+    const slugMatch = slug.match(/^(.*?)(?:-(?:part|chapter|ch|act))?-([0-9]+)(?:-[0-9]+)?$/i);
+    if (slugMatch) {
+      const num = parseInt(slugMatch[2], 10);
+      if (!Number.isNaN(num)) {
+        return { base: clean, number: num, cleanTitle: clean, fromSlug: true };
+      }
+    }
+  }
+
+  return { base: clean, number: null, cleanTitle: clean };
+}
+
+function cleanTitleString(title) {
+  return plain(title)
+    .replace(/[–—]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeSeriesKey(str) {
+  return (str || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function romanToNumber(str) {
+  if (!str) return null;
+  const roman = str.toUpperCase().trim();
+  if (!/^M{0,4}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})$/i.test(roman)) return null;
+  const lookup = { M: 1000, CM: 900, D: 500, CD: 400, C: 100, XC: 90, L: 50, XL: 40, X: 10, IX: 9, V: 5, IV: 4, I: 1 };
+  let num = 0;
+  let i = 0;
+  for (const [r, val] of Object.entries(lookup)) {
+    while (roman.substr(i, r.length) === r) {
+      num += val;
+      i += r.length;
+    }
+  }
+  return num > 0 ? num : null;
 }

@@ -473,6 +473,60 @@ h1, h2, h3 {
   border-radius: 12px;
 }
 
+.story-nav-section {
+  margin-top: 36px;
+}
+
+.next-chapter-card {
+  padding: 24px;
+  background: rgba(36, 28, 22, 0.05);
+  border: 1px solid rgba(36, 28, 22, 0.12);
+  border-radius: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.next-chapter-text {
+  min-width: 0;
+  flex: 1 1 260px;
+}
+
+.next-chapter-text .eyebrow {
+  margin: 0 0 6px;
+  color: #9a5b32;
+  font-size: 0.76rem;
+}
+
+.next-chapter-title {
+  margin: 0;
+  font-size: 1.35rem;
+  line-height: 1.25;
+  color: var(--paper-ink);
+}
+
+.next-chapter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.series-end-note {
+  margin: 0;
+  padding: 14px 18px;
+  background: rgba(36, 28, 22, 0.04);
+  border: 1px dashed rgba(36, 28, 22, 0.16);
+  border-radius: 14px;
+  color: var(--paper-muted);
+  font-size: 0.95rem;
+  font-style: italic;
+  text-align: center;
+}
+
 .story-actions {
   display: flex;
   flex-wrap: wrap;
@@ -652,6 +706,18 @@ h1, h2, h3 {
   .story-head .meta { justify-content: center; }
 
   .story-body { font-size: 1.05rem; }
+
+  .next-chapter-card {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 16px;
+    padding: 18px 16px;
+  }
+
+  .next-chapter-btn {
+    width: 100%;
+    justify-content: center;
+  }
 
   .story-actions .btn {
     flex: 1 1 140px;
